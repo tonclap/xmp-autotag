@@ -1,0 +1,8 @@
+# Tagging
+requests>=2.31
+Pillow>=10.0
+
+# Semantic search (indexing, CLI and web UI)
+numpy>=1.24
+onnxruntime>=1.16
+tokenizers>=0.15

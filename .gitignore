@@ -1,0 +1,19 @@
+# Secrets
+.env
+*.env
+.env.*
+!.env.example
+credentials.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Run artefacts: logs, sidecar backups, search index, thumbnails
+output/
+
+# Local embedding model files
+models/
