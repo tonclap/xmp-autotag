@@ -117,7 +117,9 @@ def describe(image_path, prompt, reasoning=None, model=None):
     try:
         return {
             "text": payload["choices"][0]["message"]["content"],
-            "cost": payload.get("usage", {}).get("cost"),
+            # "usage" is absent on some providers and explicitly null on
+            # others; both used to raise straight out of the worker thread.
+            "cost": (payload.get("usage") or {}).get("cost"),
         }
     except (KeyError, IndexError):
         return {"error": f"unexpected response: {json.dumps(payload)[:500]}"}

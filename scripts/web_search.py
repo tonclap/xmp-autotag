@@ -10,6 +10,7 @@ off your disk and has no authentication of any kind.
 Search logic lives in search_core.py (shared with the CLI). This module adds
 lazy, cached thumbnails and nothing else.
 """
+import argparse
 import json
 import sys
 from hashlib import sha1
@@ -207,7 +208,10 @@ main{max-width:1200px;margin:0 auto;padding:18px 20px 60px}
 <script>
 const $=s=>document.querySelector(s), q=$("#q"), results=$("#results"),
       count=$("#count"), overlay=$("#overlay"), mediaToggle=$("#mediaToggle");
-const esc=t=>String(t).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+// Quotes included: esc() output also lands inside HTML attributes (data-path),
+// and a file name may legally contain a double quote.
+const esc=t=>String(t).replace(/[&<>"']/g,c=>(
+  {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 function thumbUrl(p,s){return "/thumb?p="+encodeURIComponent(p)+"&s="+s;}
 function basename(p){return p.split(/[\\\\/]/).pop();}
 
@@ -382,7 +386,12 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else config.WEB_SEARCH_PORT
+    # argparse rather than sys.argv[1]: the bare version answered "--help" with
+    # a ValueError traceback, and any typo in the port with the same.
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("port", nargs="?", type=int, default=config.WEB_SEARCH_PORT,
+                    help=f"port to listen on (default: {config.WEB_SEARCH_PORT})")
+    port = ap.parse_args().port
     if not ALLOWED_ROOTS:
         sys.exit("PHOTO_ROOT is not set (see .env.example) - nothing to serve images from")
     if not sc.INDEX_PATH.exists():

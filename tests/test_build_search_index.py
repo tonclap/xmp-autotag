@@ -141,3 +141,58 @@ def test_already_indexed_skips_malformed_lines(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(bsi, "INDEX_PATH", index_path)
     assert bsi.already_indexed() == {"a.jpg", "b.jpg"}
+
+
+# --- text comes back out of the XML unescaped ---------------------------
+
+def test_extract_unescapes_xml_entities(tmp_path):
+    # What goes in escaped has to come out plain: the index feeds the embedder,
+    # the CLI and a web UI that escapes once more on its own.
+    import xmp
+
+    img = tmp_path / "a.jpg"
+    xmp_path = tmp_path / "a.xmp"
+    xmp.create_new(xmp_path, *xmp.build_fields("Tom & Jerry <at> home", ["cat & mouse", "dog"]))
+
+    description, keywords, _people, _location, _date = bsi.extract(xmp_path, img, tmp_path)
+
+    assert description == "Tom & Jerry <at> home"
+    assert keywords == ["cat & mouse", "dog"]
+
+
+def test_extract_people_and_location_are_unescaped(tmp_path):
+    content = (
+        '<rdf:RDF><rdf:Description rdf:about="">'
+        '<dc:description><rdf:Alt><rdf:li xml:lang="x-default">Scene</rdf:li></rdf:Alt></dc:description>'
+        "<Iptc4xmpExt:PersonInImage><rdf:Bag><rdf:li>Anna &amp; Ben</rdf:li></rdf:Bag>"
+        "</Iptc4xmpExt:PersonInImage>"
+        '<Iptc4xmpExt:LocationShown Iptc4xmpExt:City="Sant&apos;Angelo" '
+        'Iptc4xmpExt:CountryName="Italy"/>'
+        "</rdf:Description></rdf:RDF>"
+    )
+    xmp_path = tmp_path / "a.xmp"
+    xmp_path.write_text(content, encoding="utf-8")
+
+    _desc, _kw, people, location, _date = bsi.extract(xmp_path, tmp_path / "a.jpg", tmp_path)
+
+    assert people == ["Anna & Ben"]
+    assert location["city"] == "Sant'Angelo"
+
+
+def test_location_is_found_in_the_shorthand_form(tmp_path):
+    # rdf:parseType="Resource" on the opening tag, and a struct closed with "/>"
+    # - both legal XMP, and both invisible to a pattern that expects a bare tag.
+    content = (
+        '<rdf:RDF><rdf:Description rdf:about="">'
+        '<dc:description><rdf:Alt><rdf:li xml:lang="x-default">Scene</rdf:li></rdf:Alt></dc:description>'
+        '<Iptc4xmpExt:LocationShown rdf:parseType="Resource" '
+        'Iptc4xmpExt:City="Vienna" Iptc4xmpExt:CountryName="Austria"/>'
+        "</rdf:Description></rdf:RDF>"
+    )
+    xmp_path = tmp_path / "a.xmp"
+    xmp_path.write_text(content, encoding="utf-8")
+
+    location = bsi.extract_location(xmp_path.read_text(encoding="utf-8"))
+
+    assert location["city"] == "Vienna"
+    assert location["country"] == "Austria"

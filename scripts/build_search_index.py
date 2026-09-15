@@ -13,6 +13,7 @@ Appends and flushes after every batch, and skips paths that are already in the
 index, so an interrupted run resumes instead of starting over.
 """
 import argparse
+import html
 import json
 import re
 import sys
@@ -30,8 +31,16 @@ BATCH_SIZE = 64
 DESC_RE = re.compile(r"<dc:description>.*?<rdf:li[^>]*>(.*?)</rdf:li>", re.S)
 SUBJ_RE = re.compile(r"<dc:subject>.*?</dc:subject>", re.S)
 LI_RE = re.compile(r"<rdf:li>(.*?)</rdf:li>")
-PERSON_RE = re.compile(r"<Iptc4xmpExt:PersonInImage>.*?</Iptc4xmpExt:PersonInImage>", re.S)
-LOCATION_RE = re.compile(r"<Iptc4xmpExt:LocationShown>.*?</Iptc4xmpExt:LocationShown>", re.S)
+# \b[^>]*> rather than a bare ">": both elements legally carry attributes on the
+# opening tag (rdf:parseType="Resource" is the common one, and the shorthand form
+# puts the whole struct there and closes with "/>"). Matching only the bare tag
+# silently indexed such a sidecar as having no people and no place.
+PERSON_RE = re.compile(
+    r"<Iptc4xmpExt:PersonInImage\b(?:[^>]*/>|[^>]*>.*?</Iptc4xmpExt:PersonInImage>)", re.S
+)
+LOCATION_RE = re.compile(
+    r"<Iptc4xmpExt:LocationShown\b(?:[^>]*/>|[^>]*>.*?</Iptc4xmpExt:LocationShown>)", re.S
+)
 COUNTRY_ATTR_RE = re.compile(r'Iptc4xmpExt:CountryName="([^"]*)"')
 CITY_ATTR_RE = re.compile(r'Iptc4xmpExt:City="([^"]*)"')
 PROVINCE_ATTR_RE = re.compile(r'Iptc4xmpExt:ProvinceState="([^"]*)"')
@@ -78,7 +87,7 @@ def extract_people(content):
     m = PERSON_RE.search(content)
     if not m:
         return []
-    return [name.strip() for name in LI_RE.findall(m.group(0)) if name.strip()]
+    return [html.unescape(name).strip() for name in LI_RE.findall(m.group(0)) if name.strip()]
 
 
 def extract_location(content):
@@ -91,10 +100,10 @@ def extract_location(content):
     province = PROVINCE_ATTR_RE.search(block)
     name = LOCATION_NAME_RE.search(block)
     loc = {
-        "country": country.group(1) if country else "",
-        "city": city.group(1) if city else "",
-        "province": province.group(1) if province else "",
-        "name": name.group(1).strip() if name else "",
+        "country": html.unescape(country.group(1)) if country else "",
+        "city": html.unescape(city.group(1)) if city else "",
+        "province": html.unescape(province.group(1)) if province else "",
+        "name": html.unescape(name.group(1)).strip() if name else "",
     }
     return loc if any(loc.values()) else None
 
@@ -105,9 +114,12 @@ def extract(xmp_path, img_path, root):
     m = DESC_RE.search(content)
     if not m:
         return None, [], [], None, None
-    description = m.group(1).strip()
+    # The text in the file is XML-escaped, and this is the point where it stops
+    # being XML. Without unescaping, "Tom & Jerry" is indexed, embedded and
+    # shown as "Tom &amp; Jerry" — and the web UI escapes it a second time.
+    description = html.unescape(m.group(1)).strip()
     subj_block = SUBJ_RE.search(content)
-    keywords = LI_RE.findall(subj_block.group(0)) if subj_block else []
+    keywords = [html.unescape(kw) for kw in LI_RE.findall(subj_block.group(0))] if subj_block else []
     return (
         description,
         keywords,

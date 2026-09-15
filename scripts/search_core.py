@@ -20,6 +20,7 @@ Shared by the CLI (search.py) and the web UI (web_search.py).
 """
 import json
 import re
+from threading import Lock
 
 import numpy as np
 
@@ -172,6 +173,10 @@ def _match_date(query_date, record_date):
 # milliseconds, so there is no reason for an approximate index. Cached by file
 # mtime to avoid re-reading the JSONL on every keystroke.
 _INDEX_CACHE = {"mtime": None, "vectors": None, "meta": None, "skipped_cjk": 0}
+# The web UI is a ThreadingHTTPServer, so several requests read this cache at
+# once. Without the lock a request could pick up the vectors of one generation
+# and the metadata of the next, and rows would not line up with paths.
+_INDEX_LOCK = Lock()
 
 
 def _load_index():
@@ -185,7 +190,7 @@ def _load_index():
                 record = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            text = record["description"] + " ".join(record.get("keywords") or [])
+            text = record["description"] + " " + " ".join(record.get("keywords") or [])
             if CJK_RE.search(text):
                 # Known model glitch (docs/KNOWN_ISSUES.md): stray CJK characters
                 # in text that should not contain any. Counted and reported
@@ -215,10 +220,11 @@ def get_index():
     if not INDEX_PATH.exists():
         return None, [], 0
     mtime = INDEX_PATH.stat().st_mtime
-    if _INDEX_CACHE["mtime"] != mtime:
-        vectors, meta, skipped = _load_index()
-        _INDEX_CACHE.update(mtime=mtime, vectors=vectors, meta=meta, skipped_cjk=skipped)
-    return _INDEX_CACHE["vectors"], _INDEX_CACHE["meta"], _INDEX_CACHE["skipped_cjk"]
+    with _INDEX_LOCK:
+        if _INDEX_CACHE["mtime"] != mtime:
+            vectors, meta, skipped = _load_index()
+            _INDEX_CACHE.update(mtime=mtime, vectors=vectors, meta=meta, skipped_cjk=skipped)
+        return _INDEX_CACHE["vectors"], _INDEX_CACHE["meta"], _INDEX_CACHE["skipped_cjk"]
 
 
 def stats():
