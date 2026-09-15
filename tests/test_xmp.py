@@ -17,6 +17,7 @@ NS = {
     "dc": "http://purl.org/dc/elements/1.1/",
     "xml": "http://www.w3.org/XML/1998/namespace",
     "mwg-rs": "http://www.metadataworkinggroup.com/schemas/regions/",
+    "Iptc4xmpExt": "http://iptc.org/std/Iptc4xmpExt/2008-02-29/",
 }
 
 
@@ -312,3 +313,171 @@ def test_has_subject_variants(tmp_path):
     untagged.write_text("<a><MY:Rating>5</MY:Rating></a>", encoding="utf-8")
     assert xmp.has_subject(untagged) is False
     assert xmp.has_subject(tmp_path / "missing.xmp") is False
+
+
+# --- merge_existing: several sibling rdf:Description blocks --------------
+
+def _multi_block_sidecar(tmp_path, dc_on=0):
+    """A sidecar shaped the way Adobe writes one: a block per schema.
+
+    dc_on says which block declares xmlns:dc (-1 for none at all).
+    """
+    blocks = [
+        '<rdf:Description rdf:about=""{ns0}>\n'
+        "   <dc:description><rdf:Alt><rdf:li xml:lang=\"x-default\">"
+        "OLYMPUS DIGITAL CAMERA</rdf:li></rdf:Alt></dc:description>\n"
+        "  </rdf:Description>",
+        '<rdf:Description rdf:about=""{ns1}\n'
+        '   xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmp:Rating="4"/>',
+        '<rdf:Description rdf:about=""{ns2}\n'
+        '   xmlns:Iptc4xmpExt="http://iptc.org/std/Iptc4xmpExt/2008-02-29/">\n'
+        "   <Iptc4xmpExt:PersonInImage><rdf:Bag><rdf:li>Anna</rdf:li></rdf:Bag>"
+        "</Iptc4xmpExt:PersonInImage>\n"
+        "  </rdf:Description>",
+    ]
+    ns = f'\n   xmlns:dc="{xmp.DC_NS}"'
+    body = "\n  ".join(
+        block.format(**{f"ns{i}": ns if i == dc_on else "" for i in range(3)})
+        for i, block in enumerate(blocks)
+    )
+    content = (
+        '<x:xmpmeta xmlns:x="adobe:ns:meta/">\n'
+        ' <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">\n'
+        f"  {body}\n </rdf:RDF>\n</x:xmpmeta>\n"
+    )
+    xmp_path = tmp_path / "a.xmp"
+    xmp_path.write_text(content, encoding="utf-8")
+    return xmp_path
+
+
+def test_merge_existing_writes_into_the_block_that_declares_dc(tmp_path, isolated_backup_dir):
+    # The naive anchor — the last </rdf:Description> in the file — belongs to
+    # the Iptc4xmpExt block here, which has no xmlns:dc in scope. Writing dc:*
+    # fields there produced a sidecar that would not parse at all.
+    xmp_path = _multi_block_sidecar(tmp_path, dc_on=0)
+
+    _backup, err = xmp.merge_existing(xmp_path, *_fields())
+
+    assert err is None
+    root = ET.fromstring(xmp_path.read_text(encoding="utf-8"))  # does not raise
+    assert root.find(".//dc:subject/rdf:Bag/rdf:li", NS).text == "new"
+    assert root.find(".//dc:description/rdf:Alt/rdf:li", NS).text == "A new scene description"
+    assert "OLYMPUS DIGITAL CAMERA" not in xmp_path.read_text(encoding="utf-8")
+    assert root.find(".//Iptc4xmpExt:PersonInImage/rdf:Bag/rdf:li", NS).text == "Anna"
+
+
+def test_merge_existing_picks_the_dc_block_wherever_it_sits(tmp_path, isolated_backup_dir):
+    xmp_path = _multi_block_sidecar(tmp_path, dc_on=2)
+
+    _backup, err = xmp.merge_existing(xmp_path, *_fields())
+
+    assert err is None
+    root = ET.fromstring(xmp_path.read_text(encoding="utf-8"))
+    dc_block = root.findall(".//rdf:Description", NS)[-1]
+    assert dc_block.find("./dc:subject", NS) is not None
+    assert dc_block.find("./Iptc4xmpExt:PersonInImage", NS) is not None
+
+
+def test_merge_existing_adds_the_namespace_to_the_block_it_writes_into(tmp_path, isolated_backup_dir):
+    xmp_path = _multi_block_sidecar(tmp_path, dc_on=-1)
+
+    _backup, err = xmp.merge_existing(xmp_path, *_fields())
+
+    assert err is None
+    root = ET.fromstring(xmp_path.read_text(encoding="utf-8"))
+    assert root.find(".//dc:subject/rdf:Bag/rdf:li", NS).text == "new"
+    assert root.find(".//Iptc4xmpExt:PersonInImage/rdf:Bag/rdf:li", NS).text == "Anna"
+
+
+def test_merge_existing_uses_a_namespace_declared_on_an_ancestor(tmp_path, isolated_backup_dir):
+    # xmlns:dc on rdf:RDF is in scope for every block, so no block needs its own.
+    content = (
+        '<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"\n'
+        f'   xmlns:dc="{xmp.DC_NS}">\n'
+        ' <rdf:Description rdf:about=""><MY:Keep xmlns:MY="http://ns.example.com/m/">'
+        "v</MY:Keep></rdf:Description>\n"
+        ' <rdf:Description rdf:about="" xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmp:Rating="4"/>\n'
+        "</rdf:RDF>"
+    )
+    xmp_path = tmp_path / "a.xmp"
+    xmp_path.write_text(content, encoding="utf-8")
+
+    _backup, err = xmp.merge_existing(xmp_path, *_fields())
+
+    assert err is None
+    result = xmp_path.read_text(encoding="utf-8")
+    assert result.count(f'xmlns:dc="{xmp.DC_NS}"') == 1  # not re-declared
+    root = ET.fromstring(result)
+    assert root.find(".//dc:subject/rdf:Bag/rdf:li", NS).text == "new"
+
+
+def test_merge_existing_expands_a_self_closing_block_among_siblings(tmp_path, isolated_backup_dir):
+    content = (
+        '<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">\n'
+        ' <rdf:Description rdf:about="" xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmp:Rating="4"/>\n'
+        f' <rdf:Description rdf:about="" xmlns:dc="{xmp.DC_NS}"/>\n'
+        "</rdf:RDF>"
+    )
+    xmp_path = tmp_path / "a.xmp"
+    xmp_path.write_text(content, encoding="utf-8")
+
+    _backup, err = xmp.merge_existing(xmp_path, *_fields())
+
+    assert err is None
+    root = ET.fromstring(xmp_path.read_text(encoding="utf-8"))
+    assert root.find(".//dc:subject/rdf:Bag/rdf:li", NS).text == "new"
+    assert root.findall(".//rdf:Description", NS)[0].get(
+        "{http://ns.adobe.com/xap/1.0/}Rating"
+    ) == "4"
+
+
+def test_top_level_blocks_ignores_nested_descriptions():
+    content = (
+        '<rdf:RDF><rdf:Description rdf:about="">'
+        "<mwg-rs:Regions><rdf:Description/></mwg-rs:Regions>"
+        '</rdf:Description><rdf:Description rdf:about="" xmp:Rating="4"/></rdf:RDF>'
+    )
+    blocks = xmp.top_level_blocks(content)
+    assert len(blocks) == 2
+    assert [b["self_closing"] for b in blocks] == [False, True]
+
+
+def test_backup_name_is_stable_across_runs(tmp_path, isolated_backup_dir):
+    # hash() is salted per process: the same sidecar used to get a different
+    # backup name every run, so a backup could not be traced to its source.
+    first = xmp._path_digest(tmp_path / "photo.xmp")
+    assert first == xmp._path_digest(tmp_path / "photo.xmp")
+    assert first != xmp._path_digest(tmp_path / "other.xmp")
+
+
+# --- parse_text: prose must not be mistaken for a keyword list ----------
+
+def test_parse_text_rejects_a_second_paragraph_of_prose():
+    # Seen in the wild: the model writes two paragraphs and no keyword list.
+    # Taken as keywords, the second sentence landed in dc:subject and was cut
+    # out of the description — and dc:subject then marks the file as done.
+    description, keywords = xmp.parse_text(
+        "Two women stand by a lake.\n\nThe light is low, the water still."
+    )
+    assert keywords == []
+    assert description == "Two women stand by a lake.\n\nThe light is low, the water still."
+
+
+def test_parse_text_rejects_a_trailing_sentence_with_a_comma():
+    text = "A child plays in the snow.\nThe dog runs alongside, barking."
+    description, keywords = xmp.parse_text(text)
+    assert keywords == []
+    assert description == text
+
+
+def test_parse_text_rejects_a_single_line_answer_with_commas():
+    text = "A cat sitting on a windowsill, looking outside."
+    assert xmp.parse_text(text) == (text, [])
+
+
+def test_parse_text_keeps_short_multiword_keywords():
+    description, keywords = xmp.parse_text(
+        "A birthday at home.\n\nbirthday party, snow covered field, cake"
+    )
+    assert description == "A birthday at home."
+    assert keywords == ["birthday party", "snow covered field", "cake"]
