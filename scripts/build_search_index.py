@@ -25,7 +25,7 @@ import dates
 import embeddings as emb
 import tag_archive
 
-INDEX_PATH = config.OUTPUT_DIR / "search_index.jsonl"
+INDEX_PATH = config.INDEX_PATH
 BATCH_SIZE = 64
 
 DESC_RE = re.compile(r"<dc:description>.*?<rdf:li[^>]*>(.*?)</rdf:li>", re.S)

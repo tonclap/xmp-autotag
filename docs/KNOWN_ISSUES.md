@@ -29,12 +29,13 @@ ask for it.
 
 **An answer without a keyword list is thrown away whole.** The prompt asks for
 sentences, a blank line, then 5-10 keywords; a model that writes a second
-paragraph instead produces comma-separated clauses, not keywords. Those are now
+paragraph instead produces comma-separated clauses, not keywords. Those are
 rejected rather than salvaged — the file is logged as a parse failure and
-`retry_failed.py` asks again. The cost is that a genuine keyword longer than
-three words takes the whole answer down with it; the alternative is worse, since
-sentence fragments written into `dc:subject` also mark the file as done and no
-later run revisits it.
+`retry_failed.py` asks again. A list counts as keywords when no item runs longer
+than three words, or when there are at least five items and none runs longer
+than five; a short list of long phrases therefore takes the whole answer down
+with it. The alternative is worse, since sentence fragments written into
+`dc:subject` also mark the file as done and no later run revisits it.
 
 **Some images will never get tags.** Provider content filters refuse a small
 number of images with `200 OK` and an empty body. This is a policy decision on
@@ -49,9 +50,11 @@ pipeline. In a parallel run, whichever finishes first gets its description store
 of images on the reference archive. The rest have no date signal at all, and date
 queries cannot reach them.
 
-**RAW support is limited to the embedded preview.** Pillow does not decode RAW, so
-oversized RAW files are uploaded via their embedded JPEG preview. A RAW file
-without such a preview and above the request size limit stays untagged.
+**RAW support is limited to the embedded preview.** Pillow does not decode RAW,
+so a RAW file is uploaded via its embedded JPEG preview — whatever its size,
+since a small RAW is exactly as unreadable to the provider as a large one. A RAW
+file without such a preview is sent as it is, under its own media type, and the
+provider will almost certainly refuse it.
 
 **Sidecars occasionally vanished after a successful write.** Two files out of
 10,270 reported `created` and had no sidecar on a later check; re-creating one of

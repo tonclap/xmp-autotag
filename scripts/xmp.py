@@ -33,12 +33,18 @@ BACKUP_DIR = config.OUTPUT_DIR / "xmp_backup"
 
 # A keyword is a word or a short phrase. A model that answers with a second
 # paragraph of prose instead of a keyword list produces comma-separated *clauses*
-# — and without this limit they were written into dc:subject as if they were
+# — and without these limits they were written into dc:subject as if they were
 # keywords, with the sentence they came from cut out of the description. Since
 # dc:subject is what marks a file as done, that damage is permanent: a re-run
 # skips the file. Rejecting the whole answer is the cheaper mistake — the file is
 # logged as a parse failure and retry_failed.py asks again.
+#
+# Length alone would be too blunt, so count matters too: the prompt asks for
+# 5-10 keywords, and a list that long is not a sentence split by commas, which
+# leaves room for the occasional long phrase ("snow covered mountain ridge").
 MAX_KEYWORD_WORDS = 3
+LONG_LIST_MIN_ITEMS = 5
+LONG_LIST_MAX_WORDS = 5
 
 
 def _as_keywords(line):
@@ -46,9 +52,12 @@ def _as_keywords(line):
     items = [kw.strip().rstrip(".") for kw in line.split(",") if kw.strip()]
     if len(items) < 2:
         return []
-    if any(len(kw.split()) > MAX_KEYWORD_WORDS for kw in items):
-        return []
-    return items
+    longest = max(len(kw.split()) for kw in items)
+    if longest <= MAX_KEYWORD_WORDS:
+        return items
+    if len(items) >= LONG_LIST_MIN_ITEMS and longest <= LONG_LIST_MAX_WORDS:
+        return items
+    return []
 
 
 def parse_text(text):
@@ -83,6 +92,42 @@ def build_fields(description, keywords):
 
 
 _RDF_TAG_RE = re.compile(r"<rdf:Description\b[^>]*>|</rdf:Description>", re.S)
+# "dc" is a convention, not a rule: a prefix is whatever the document binds to
+# the Dublin Core namespace. Reading the binding instead of assuming the name is
+# what keeps the promise in rule 2 above — hand-made keywords written under a
+# different prefix would otherwise look like an untagged file and be overwritten.
+_DC_PREFIX_IN_SCOPE_RE = re.compile(r"xmlns:dc\s*=")
+_DC_NS_BINDING_RE = re.compile(
+    r'xmlns:([A-Za-z_][\w.\-]*)\s*=\s*["\']' + re.escape(DC_NS) + r'["\']'
+)
+
+
+def dc_prefixes(content):
+    """Prefixes bound to the Dublin Core namespace, always including "dc"."""
+    return set(_DC_NS_BINDING_RE.findall(content)) | {"dc"}
+
+
+def subject_present(content):
+    """True when the document already carries a Dublin Core subject field."""
+    return any(
+        re.search(rf"<{re.escape(prefix)}:subject\b", content)
+        for prefix in dc_prefixes(content)
+    )
+
+
+def _strip_descriptions(content):
+    """Remove the existing Dublin Core description, whatever its prefix.
+
+    Safe by rule 2 in the module docstring: this only runs on a file with no
+    subject field, so anything here is camera or importer noise. Dropping it
+    first is what keeps the sidecar from ending up with two descriptions.
+    """
+    for prefix in dc_prefixes(content):
+        p = re.escape(prefix)
+        content = re.sub(
+            rf"\s*<{p}:description\b.*?</{p}:description>", "", content, count=1, flags=re.S
+        )
+    return content
 
 
 def top_level_blocks(content):
@@ -133,15 +178,21 @@ def top_level_blocks(content):
 def _pick_target_block(content, blocks):
     """The block the dc:* fields must go into, and whether it needs xmlns:dc.
 
-    Preference order: the block that already declares xmlns:dc, then any block
-    if the declaration sits on an ancestor (rdf:RDF or x:xmpmeta), then the
-    first block — which is the one that gets the declaration added.
+    Preference order: the block that declares the "dc" prefix, then the one
+    that binds the Dublin Core namespace under some other prefix (that is where
+    the existing Dublin Core data lives), then the first block. The second
+    return value says whether the "dc" prefix still has to be declared — the
+    fields are written with it, so it has to resolve.
     """
+    dc_in_scope = bool(_DC_PREFIX_IN_SCOPE_RE.search(content[: blocks[0]["open_start"]]))
+    preferred = None
     for block in blocks:
-        if "xmlns:dc=" in content[block["open_start"] : block["open_end"]]:
+        open_tag = content[block["open_start"] : block["open_end"]]
+        if _DC_PREFIX_IN_SCOPE_RE.search(open_tag):
             return block, False
-    declared_on_ancestor = "xmlns:dc=" in content[: blocks[0]["open_start"]]
-    return blocks[0], not declared_on_ancestor
+        if preferred is None and _DC_NS_BINDING_RE.search(open_tag):
+            preferred = block
+    return preferred or blocks[0], not dc_in_scope
 
 
 def merge_existing(xmp_path, subject_xml, desc_xml):
@@ -152,18 +203,14 @@ def merge_existing(xmp_path, subject_xml, desc_xml):
     """
     content = xmp_path.read_text(encoding="utf-8")
 
-    if "<dc:subject>" in content:
+    if subject_present(content):
         return None, "already has dc:subject - skipped, not overwriting"
 
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     backup_path = BACKUP_DIR / f"{xmp_path.stem}__{_path_digest(xmp_path)}.xmp"
     shutil.copy2(xmp_path, backup_path)
 
-    # Drop the old dc:description first, otherwise the file ends up with two of
-    # them. Safe by rule 2 in the module docstring: anything still here is
-    # camera or importer noise, since a hand-tagged file would have dc:subject
-    # and would have been skipped above.
-    content = re.sub(r"\s*<dc:description>.*?</dc:description>", "", content, count=1, flags=re.S)
+    content = _strip_descriptions(content)
 
     blocks = top_level_blocks(content)
     if not blocks:
@@ -268,11 +315,11 @@ _DESC_RE = re.compile(r"<dc:description>.*?</dc:description>", re.S)
 
 
 def has_subject(xmp_path):
-    """True if the sidecar exists and already carries dc:subject."""
+    """True if the sidecar exists and already carries a Dublin Core subject."""
     path = Path(xmp_path)
     if not path.exists():
         return False
     try:
-        return "<dc:subject>" in path.read_text(encoding="utf-8", errors="ignore")
+        return subject_present(path.read_text(encoding="utf-8", errors="ignore"))
     except OSError:
         return False

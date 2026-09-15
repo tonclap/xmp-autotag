@@ -351,7 +351,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps(sc.search(query, sources=sources)),
                        "application/json; charset=utf-8")
         elif url.path == "/api/duplicates":
-            dup_path = config.OUTPUT_DIR / "near_duplicates.json"
+            dup_path = config.DUPLICATES_PATH
             if not dup_path.exists():
                 body = {"error": "no report yet — python scripts/find_near_duplicates.py"}
             else:

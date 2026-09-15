@@ -25,6 +25,12 @@ RESIZE_THRESHOLD_BYTES = 4 * 1024 * 1024
 RESIZE_MAX_DIMENSION = 2048
 REQUEST_TIMEOUT_SECONDS = 60
 
+# Formats that go to the provider untouched. Everything else is converted first
+# — by extension, not by the guessed mime type: mimetypes answers
+# "image/x-olympus-orf" for a RAW file, which looks like an image and is not one
+# as far as the provider is concerned.
+UPLOADABLE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+
 
 def extract_embedded_jpeg(data):
     """Return the largest embedded JPEG found in a byte blob, or None.
@@ -50,32 +56,55 @@ def extract_embedded_jpeg(data):
     return data[start : start + size]
 
 
-def encode_image(path):
-    """Read an image and return it as a data: URL, downscaling if oversized."""
-    data = Path(path).read_bytes()
-    mime = mimetypes.guess_type(str(path))[0] or "image/jpeg"
+def _jpeg_via_pillow(data, downscale):
+    """Re-encode a blob Pillow can open as JPEG, or None when it cannot open it.
 
-    if len(data) > RESIZE_THRESHOLD_BYTES:
-        try:
-            from PIL import Image
+    No fallback of its own: the caller decides what to do with a RAW file, and
+    keeping that decision in one place is what stops the preview path from
+    feeding itself.
+    """
+    try:
+        from PIL import Image
 
-            img = Image.open(BytesIO(data))
+        img = Image.open(BytesIO(data))
+        if downscale:
             img.thumbnail((RESIZE_MAX_DIMENSION, RESIZE_MAX_DIMENSION))
-            buf = BytesIO()
-            img.convert("RGB").save(buf, format="JPEG", quality=85)
-            data = buf.getvalue()
-            mime = "image/jpeg"
-        except Exception:
-            # Pillow could not open the file directly (typical for RAW). Try the
-            # embedded preview; if there is none, send the original as-is and
-            # let the provider decide.
-            jpeg = extract_embedded_jpeg(data)
-            if jpeg:
-                data = jpeg
-                mime = "image/jpeg"
+        buf = BytesIO()
+        img.convert("RGB").save(buf, format="JPEG", quality=85)
+        return buf.getvalue()
+    except Exception:
+        return None
+
+
+def encode_image(path):
+    """Read an image and return it as a data: URL, converted where needed.
+
+    Two separate reasons to touch the bytes, and neither is decided by size
+    alone: an oversized file has to shrink, and a format the provider cannot
+    read has to become one it can. A small RAW file is exactly as undecodable
+    as a large one — it used to be uploaded untouched, labelled image/jpeg
+    because mimetypes knows nothing about .orf.
+    """
+    path = Path(path)
+    data = path.read_bytes()
+    mime = mimetypes.guess_type(str(path))[0] or ""
+    oversized = len(data) > RESIZE_THRESHOLD_BYTES
+
+    if oversized or path.suffix.lower() not in UPLOADABLE_EXTS:
+        converted = _jpeg_via_pillow(data, downscale=oversized)
+        if converted is None:
+            # Typical for RAW: Pillow cannot decode it, but the file carries a
+            # full-resolution JPEG preview that can be recovered by hand.
+            preview = extract_embedded_jpeg(data)
+            if preview is not None:
+                converted = preview
+                if oversized:
+                    converted = _jpeg_via_pillow(preview, downscale=True) or preview
+        if converted is not None:
+            data, mime = converted, "image/jpeg"
 
     b64 = base64.b64encode(data).decode("ascii")
-    return f"data:{mime};base64,{b64}"
+    return f"data:{mime or 'image/jpeg'};base64,{b64}"
 
 
 def describe(image_path, prompt, reasoning=None, model=None):

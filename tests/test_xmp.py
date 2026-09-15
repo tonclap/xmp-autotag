@@ -481,3 +481,84 @@ def test_parse_text_keeps_short_multiword_keywords():
     )
     assert description == "A birthday at home."
     assert keywords == ["birthday party", "snow covered field", "cake"]
+
+
+# --- the dc prefix is read from the document, not assumed ---------------
+
+_ALT_PREFIX_SIDECAR = (
+    '<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">'
+    ' <rdf:Description rdf:about="" xmlns:dcterms="http://purl.org/dc/elements/1.1/">'
+    "<dcterms:subject><rdf:Bag><rdf:li>handmade</rdf:li></rdf:Bag></dcterms:subject>"
+    "</rdf:Description></rdf:RDF>"
+)
+
+
+def test_has_subject_sees_keywords_written_under_another_prefix(tmp_path):
+    # "dc" is a convention; the prefix is whatever the file binds to the Dublin
+    # Core namespace. Missing that meant hand-made keywords looked like an
+    # untagged file - and rule 2 of this module promises never to overwrite them.
+    xmp_path = tmp_path / "a.xmp"
+    xmp_path.write_text(_ALT_PREFIX_SIDECAR, encoding="utf-8")
+    assert xmp.has_subject(xmp_path) is True
+
+
+def test_merge_existing_refuses_a_subject_written_under_another_prefix(tmp_path, isolated_backup_dir):
+    xmp_path = tmp_path / "a.xmp"
+    xmp_path.write_text(_ALT_PREFIX_SIDECAR, encoding="utf-8")
+
+    backup_path, err = xmp.merge_existing(xmp_path, *_fields())
+
+    assert backup_path is None
+    assert "already has dc:subject" in err
+    assert xmp_path.read_text(encoding="utf-8") == _ALT_PREFIX_SIDECAR
+
+
+def test_merge_existing_replaces_a_description_written_under_another_prefix(tmp_path, isolated_backup_dir):
+    # Camera noise under a different prefix is still camera noise, and leaving
+    # it in place would give the sidecar two Dublin Core descriptions.
+    content = (
+        '<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">'
+        f' <rdf:Description rdf:about="" xmlns:dcterms="{xmp.DC_NS}">'
+        '<dcterms:description><rdf:Alt><rdf:li xml:lang="x-default">'
+        "OLYMPUS DIGITAL CAMERA</rdf:li></rdf:Alt></dcterms:description>"
+        "</rdf:Description></rdf:RDF>"
+    )
+    xmp_path = tmp_path / "a.xmp"
+    xmp_path.write_text(content, encoding="utf-8")
+
+    _backup, err = xmp.merge_existing(xmp_path, *_fields())
+
+    assert err is None
+    result = xmp_path.read_text(encoding="utf-8")
+    assert "OLYMPUS DIGITAL CAMERA" not in result
+    root = ET.fromstring(result)
+    assert len(root.findall(".//dc:description", NS)) == 1
+    assert root.find(".//dc:description/rdf:Alt/rdf:li", NS).text == "A new scene description"
+
+
+def test_dc_prefixes_always_includes_the_conventional_one():
+    assert "dc" in xmp.dc_prefixes("<rdf:RDF/>")
+    assert xmp.dc_prefixes(f'<x xmlns:d="{xmp.DC_NS}"/>') == {"d", "dc"}
+
+
+def test_subject_present_is_not_fooled_by_a_similar_element_name():
+    assert xmp.subject_present("<dc:subjectMatter>x</dc:subjectMatter>") is False
+    assert xmp.subject_present("<dc:subject><rdf:Bag/></dc:subject>") is True
+
+
+# --- a long list of keywords is still a list ----------------------------
+
+def test_parse_text_accepts_a_long_list_with_long_phrases():
+    # The prompt asks for 5-10 keywords; a list that long is not a sentence
+    # split by commas, so a four- or five-word phrase in it is fine.
+    description, keywords = xmp.parse_text(
+        "A winter hike.\n\nsnow covered mountain ridge, winter hike in the alps, "
+        "cold, rope, tent"
+    )
+    assert description == "A winter hike."
+    assert keywords[0] == "snow covered mountain ridge"
+    assert len(keywords) == 5
+
+
+def test_parse_text_still_rejects_two_long_clauses():
+    assert xmp.parse_text("Scene.\n\nThe light is low, the water still.")[1] == []
