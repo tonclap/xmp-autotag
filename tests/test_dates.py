@@ -97,3 +97,42 @@ def test_format_label_levels_of_precision():
     assert dates.format_label({"year": 2017, "month": None, "day": None}) == "2017"
     assert dates.format_label({"year": None, "month": None, "day": None}) is None
     assert dates.format_label(None) is None
+
+
+# --- a year must not be read as a day ------------------------------------
+
+def test_year_in_front_of_the_month_is_not_a_day():
+    # "2017 May" used to yield day 17 - the tail of the year - and every photo
+    # in the folder was then indexed and labelled as 17 May 2017.
+    assert dates.from_folder_parts(("2017 may. trip to the coast",)) == {
+        "year": 2017, "month": 5, "day": None
+    }
+    assert dates.from_folder_parts(("2019 august",)) == {
+        "year": 2019, "month": 8, "day": None
+    }
+
+
+def test_day_in_front_of_the_month_still_wins():
+    assert dates.from_folder_parts(("2017, 8 may",))["day"] == 8
+    assert dates.from_folder_parts(("8 мая 2017",))["day"] == 8
+
+
+def test_query_year_before_month_has_no_day():
+    assert dates.parse_query("photos from 2017 may") == {
+        "year": 2017, "months": {5}, "day": None
+    }
+
+
+# --- find_month reports the first month in the text ----------------------
+
+def test_find_month_returns_the_first_month_in_the_text_not_the_lowest():
+    # Patterns are listed in calendar order, and the old loop returned the
+    # first pattern that matched anywhere - so December..January read as
+    # January, and the day was then read from the wrong side of the string.
+    assert dates.find_month("december trip, january return")[0] == 12
+    assert dates.find_month("сентябрь и октябрь")[0] == 9
+
+
+def test_find_month_still_falls_back_to_may():
+    assert dates.find_month("2017, 4-8 may")[0] == 5
+    assert dates.find_month("nothing here") == (None, None)

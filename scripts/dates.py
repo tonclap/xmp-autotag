@@ -49,6 +49,12 @@ YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
 FILENAME_DATE_RE = re.compile(
     r"(?<!\d)((?:19|20)\d{2})[-_]?(0[1-9]|1[0-2])[-_]?(0[1-9]|[12]\d|3[01])(?!\d)"
 )
+# A day standing right in front of a month name: "4-8 May" -> 4, "12 мая" -> 12.
+# The leading (?<!\d) is what keeps a year out of it: without it the tail of
+# "2017 May" read as day 17, and every photo in that folder was indexed — and
+# labelled in the UI — as 17 May.
+DAY_BEFORE_MONTH_RE = re.compile(r"(?<!\d)(\d{1,2})(?:\s*[-–]\s*\d{1,2})?\D{0,3}$")
+
 EXACT_DATE_RE = re.compile(r"\b(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{4})\b")  # DD.MM.YYYY
 ISO_DATE_RE = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b")
 
@@ -64,11 +70,21 @@ def valid_year(year):
 
 
 def find_month(text):
-    """First month mentioned in text -> (month number, position) or (None, None)."""
+    """First month mentioned in text -> (month number, position) or (None, None).
+
+    "First" means first in the text, not lowest month number: "December trip,
+    January return" is a December folder, and the day is read from the words in
+    front of the month that was actually found. May stays a fallback, tried only
+    when nothing else matched, because its Russian forms are short enough to
+    collide with ordinary words.
+    """
+    best = None
     for num, rx in _MONTH_RES:
         m = rx.search(text)
-        if m:
-            return num, m.start()
+        if m and (best is None or m.start() < best[1]):
+            best = (num, m.start())
+    if best is not None:
+        return best
     m = _MAY_RE.search(text)
     if m:
         return 5, m.start()
@@ -115,7 +131,7 @@ def from_folder_parts(parts):
         if month_num is not None:
             month = month_num
             before = text[:month_pos]
-            dm = re.search(r"(\d{1,2})(?:\s*[-–]\s*\d{1,2})?\D{0,3}$", before)
+            dm = DAY_BEFORE_MONTH_RE.search(before)
             day = int(dm.group(1)) if dm and 1 <= int(dm.group(1)) <= 31 else None
     if year is None and month is None:
         return None
@@ -147,14 +163,14 @@ def parse_query(query):
     day = None
     if month_pos is not None:
         # "12 May 2017" / "12 мая 2017": a bare number right before the month.
-        dm = re.search(r"(\d{1,2})\D{0,3}$", q[:month_pos])
+        dm = DAY_BEFORE_MONTH_RE.search(q[:month_pos])
         if dm and 1 <= int(dm.group(1)) <= 31:
             day = int(dm.group(1))
         if day is None:
             # "May 12, 2017": the number right after the month name, as long as
             # it is not the year itself.
             after = q[month_pos:]
-            dm = re.search(r"^\S+\D{0,3}(\d{1,2})(?!\d)", after)
+            dm = re.search(r"^\S+\D{0,3}(?<!\d)(\d{1,2})(?!\d)", after)
             if dm and 1 <= int(dm.group(1)) <= 31:
                 day = int(dm.group(1))
 
