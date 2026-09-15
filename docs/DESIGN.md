@@ -49,15 +49,24 @@ and re-serialising with any XML library reorders attributes, rewrites namespace
 prefixes and drops formatting — and the things most likely to be mangled are the
 face regions and geotags that matter more than our keywords.
 
-Two shapes that a naive insert gets wrong, both found in the wild and both
+Three shapes that a naive insert gets wrong, all found in the wild and all
 covered by tests:
 
 * `<rdf:Description rdf:about="" .../>` — self-closing, no children. There is no
   closing tag to insert before, so the `/>` has to be expanded first.
-* A **nested** `rdf:Description` inside `mwg-rs:Regions` or `LocationShown`. The
-  *last* `</rdf:Description>` in the document closes the outer element, because
-  in valid XML children close before parents — so that is the anchor, not the
-  first one.
+* A **nested** `rdf:Description` inside `mwg-rs:Regions` or `LocationShown`.
+  Children close before parents, so an inner closing tag must never be taken for
+  the outer one.
+* **Sibling** `rdf:Description` blocks — one per schema, which is how Adobe
+  products write a sidecar. Each block declares its own namespaces, so there is
+  no single "the" element: the fields have to go into the block that declares
+  `xmlns:dc` (or gets it added), not into whichever block happens to be last.
+
+Hence the insertion point is found by scanning the tags with a depth counter
+rather than by looking for the last closing tag. That earlier rule was right for
+the reference archive, where every sidecar held exactly one block, and produced
+an unparseable file on a two-block one — with the run reporting success, and the
+`dc:subject` it wrote marking the file as done for every later pass.
 
 ## "Already tagged" means `dc:subject`, and only that
 

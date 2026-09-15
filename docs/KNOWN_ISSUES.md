@@ -27,6 +27,15 @@ out of the index — they also break the ONNX embedder, whose cache is not built
 that sequence length — but the damaged sidecar on disk is only repaired when you
 ask for it.
 
+**An answer without a keyword list is thrown away whole.** The prompt asks for
+sentences, a blank line, then 5-10 keywords; a model that writes a second
+paragraph instead produces comma-separated clauses, not keywords. Those are now
+rejected rather than salvaged — the file is logged as a parse failure and
+`retry_failed.py` asks again. The cost is that a genuine keyword longer than
+three words takes the whole answer down with it; the alternative is worse, since
+sentence fragments written into `dc:subject` also mark the file as done and no
+later run revisits it.
+
 **Some images will never get tags.** Provider content filters refuse a small
 number of images with `200 OK` and an empty body. This is a policy decision on
 their side and is not worked around here; those files are logged as permanent
