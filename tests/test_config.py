@@ -108,3 +108,49 @@ def test_non_numeric_worker_count_fails_loudly(tmp_path):
 
     assert result.returncode != 0
     assert "XMP_AUTOTAG_WORKERS must be an integer" in result.stderr
+
+
+def test_dotenv_value_drops_a_trailing_comment_but_keeps_a_quoted_hash():
+    assert config._dotenv_value("/mnt/photos  # my archive") == "/mnt/photos"
+    assert config._dotenv_value("/mnt/photos\t# my archive") == "/mnt/photos"
+    assert config._dotenv_value('"/mnt/my #1 archive"') == "/mnt/my #1 archive"
+    assert config._dotenv_value("'sk-or-abc#def'") == "sk-or-abc#def"
+    assert config._dotenv_value("  plain  ") == "plain"
+    # A "#" that is not a comment marker stays put: no space in front of it.
+    assert config._dotenv_value("sk-or-abc#def") == "sk-or-abc#def"
+
+
+def test_an_empty_environment_variable_does_not_suppress_dotenv(tmp_path):
+    # An exported but empty variable carries no setting. Treating it as one
+    # left the value in .env unread while looking as if it had been provided.
+    repo = tmp_path / "repo"
+    (repo / "scripts").mkdir(parents=True)
+    (repo / "scripts" / "config.py").write_bytes((SCRIPTS_DIR / "config.py").read_bytes())
+    (repo / ".env").write_text("TAG_LANGUAGE=German\n", encoding="utf-8")
+
+    result = _run_snippet(
+        """
+        import sys
+        sys.path.insert(0, "scripts")
+        import config
+        print(config.TAG_LANGUAGE)
+        """,
+        env={"TAG_LANGUAGE": ""},
+        cwd=repo,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "German"
+
+
+def test_shared_artefact_paths_live_under_the_output_dir():
+    # One definition each: the index is written by build_search_index.py and
+    # read by search_core.py, the report by find_near_duplicates.py and read by
+    # the web UI. Two spellings of the same path drift apart silently.
+    import build_search_index as bsi
+    import find_near_duplicates as fnd
+    import search_core as sc
+
+    assert sc.INDEX_PATH == config.INDEX_PATH == bsi.INDEX_PATH
+    assert fnd.OUT_PATH == config.DUPLICATES_PATH
+    assert config.INDEX_PATH.parent == config.OUTPUT_DIR

@@ -157,7 +157,7 @@ and point `GEO_ALIASES_FILE` at the file.
 python -m pytest tests -q
 ```
 
-121 tests, all offline: no network, no model, no archive. They run on a fresh clone
+158 tests, all offline: no network, no model, no archive. They run on a fresh clone
 with no `.env` at all, and cover the parts where a mistake is expensive — editing
 sidecars without damaging existing metadata, the date chain, the ranking bonuses,
 the duplicate clustering.

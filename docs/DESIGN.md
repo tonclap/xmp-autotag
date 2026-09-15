@@ -62,6 +62,13 @@ covered by tests:
   no single "the" element: the fields have to go into the block that declares
   `xmlns:dc` (or gets it added), not into whichever block happens to be last.
 
+The prefix is read from the document for the same reason. `dc` is a convention,
+not a rule: a sidecar binds the Dublin Core namespace to whatever prefix it
+likes, and a file whose hand-made keywords sit in `<dcterms:subject>` has to
+count as tagged just as much as one using `<dc:subject>`. Otherwise the one
+promise this tool makes about existing work — that it never overwrites
+`dc:subject` — holds only for files that happened to pick the usual prefix.
+
 Hence the insertion point is found by scanning the tags with a depth counter
 rather than by looking for the last closing tag. That earlier rule was right for
 the reference archive, where every sidecar held exactly one block, and produced

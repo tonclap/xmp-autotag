@@ -20,7 +20,6 @@ silently skip them.
 """
 import argparse
 import json
-import re
 import sys
 from pathlib import Path
 
@@ -29,7 +28,10 @@ import search_core as sc
 import tag_archive
 import xmp
 
-CJK_RE = re.compile(r"[一-鿿]")
+# The same pattern the index reader uses to exclude these records, imported
+# rather than restated: two copies of "what counts as the glitch" would let the
+# repair pass and the index disagree about which files are damaged.
+CJK_RE = sc.CJK_RE
 
 
 def affected_paths(index_path):

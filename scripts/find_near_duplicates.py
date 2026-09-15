@@ -25,7 +25,7 @@ from pathlib import Path
 import config
 import search_core as sc
 
-OUT_PATH = config.OUTPUT_DIR / "near_duplicates.json"
+OUT_PATH = config.DUPLICATES_PATH
 # Calibrated by hand against real bursts across the 0.90-1.0 range, with
 # consecutive frame numbers and capture seconds as independent confirmation.
 # Lower merges different scenes; higher misses bursts whose descriptions vary.
@@ -79,13 +79,21 @@ def find_clusters(threshold, min_cluster):
     for i in range(len(meta)):
         groups[uf.find(i)].append(i)
 
+    # Edges bucketed by the cluster they ended up in. Scanning the whole pair
+    # table once per cluster instead is O(clusters x pairs) — invisible on a
+    # handful of bursts, and the dominant cost on an archive where most folders
+    # produce one.
+    edges_by_root = defaultdict(list)
+    for (a, _b), score in pair_scores.items():
+        edges_by_root[uf.find(a)].append(score)
+
     clusters = []
-    for members in groups.values():
+    for root, members in groups.items():
         if len(members) < min_cluster:
             continue
         # Average over the edges that actually passed the threshold: a cluster
         # can be a chain A~B~C with no direct A~C edge.
-        edges = [s for (a, b), s in pair_scores.items() if a in members and b in members]
+        edges = edges_by_root[root]
         clusters.append({
             "size": len(members),
             "avg_similarity": round(sum(edges) / len(edges), 4) if edges else None,

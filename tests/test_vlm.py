@@ -85,3 +85,92 @@ def test_extract_embedded_jpeg_takes_the_largest_preview():
 
 def test_extract_embedded_jpeg_returns_none_without_a_preview():
     assert vlm.extract_embedded_jpeg(b"no jpeg markers here") is None
+
+
+# --- encode_image: conversion is decided by format, not only by size ----
+
+def _jpeg_bytes(size=(60, 40)):
+    from io import BytesIO
+
+    from PIL import Image
+
+    buf = BytesIO()
+    Image.new("RGB", size, "red").save(buf, format="JPEG")
+    return buf.getvalue()
+
+
+def _decoded(data_url):
+    import base64
+
+    header, _, payload = data_url.partition(",")
+    return header, base64.b64decode(payload)
+
+
+def test_a_small_raw_file_is_converted_to_its_preview(tmp_path):
+    # mimetypes answers "image/x-olympus-orf" for .orf, which passes for an
+    # image type and is not one to the provider. Under the size threshold the
+    # file used to be uploaded as raw bytes labelled image/jpeg.
+    raw = tmp_path / "a.orf"
+    preview = _jpeg_bytes()
+    raw.write_bytes(b"ORFHEADER" + preview + b"trailing bytes")
+
+    header, payload = _decoded(vlm.encode_image(raw))
+
+    assert header == "data:image/jpeg;base64"
+    assert payload == preview
+
+
+def test_an_ordinary_small_jpeg_is_sent_untouched(tmp_path):
+    photo = tmp_path / "a.jpg"
+    photo.write_bytes(_jpeg_bytes())
+
+    header, payload = _decoded(vlm.encode_image(photo))
+
+    assert header == "data:image/jpeg;base64"
+    assert payload == photo.read_bytes()  # no re-encoding, no quality loss
+
+
+def test_a_png_keeps_its_own_type(tmp_path):
+    from io import BytesIO
+
+    from PIL import Image
+
+    buf = BytesIO()
+    Image.new("RGB", (10, 10), "blue").save(buf, format="PNG")
+    photo = tmp_path / "a.png"
+    photo.write_bytes(buf.getvalue())
+
+    header, payload = _decoded(vlm.encode_image(photo))
+
+    assert header == "data:image/png;base64"
+    assert payload == photo.read_bytes()
+
+
+def test_an_oversized_image_is_downscaled(tmp_path, monkeypatch):
+    from io import BytesIO
+
+    from PIL import Image
+
+    monkeypatch.setattr(vlm, "RESIZE_THRESHOLD_BYTES", 1024)
+    monkeypatch.setattr(vlm, "RESIZE_MAX_DIMENSION", 64)
+    buf = BytesIO()
+    Image.new("RGB", (900, 600), "red").save(buf, format="PNG")
+    photo = tmp_path / "big.png"
+    photo.write_bytes(buf.getvalue())
+
+    header, payload = _decoded(vlm.encode_image(photo))
+
+    assert header == "data:image/jpeg;base64"
+    assert max(Image.open(BytesIO(payload)).size) <= 64
+
+
+def test_a_raw_file_without_a_preview_is_not_mislabelled(tmp_path):
+    # Nothing can be done for this one, and it is honest about that: the
+    # provider gets the real type rather than a JPEG label on RAW bytes.
+    raw = tmp_path / "a.orf"
+    raw.write_bytes(b"no jpeg markers in here at all")
+
+    header, payload = _decoded(vlm.encode_image(raw))
+
+    assert header != "data:image/jpeg;base64"
+    assert payload == raw.read_bytes()

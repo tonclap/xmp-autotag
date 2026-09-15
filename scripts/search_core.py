@@ -28,7 +28,7 @@ import config
 import dates
 import embeddings as emb
 
-INDEX_PATH = config.OUTPUT_DIR / "search_index.jsonl"
+INDEX_PATH = config.INDEX_PATH
 
 # Searching the photo archive is the default; the media library is opt-in
 # (--media on the CLI, a toggle in the web UI), because infographics and memes

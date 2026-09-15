@@ -16,10 +16,27 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
+def _dotenv_value(raw):
+    """The value part of a .env line, unquoted and stripped of a trailing note.
+
+    A quoted value is taken verbatim, so a path or a password may contain a "#".
+    An unquoted one ends at the first " #": writing `PHOTO_ROOT=/mnt/photos  #
+    archive` is natural enough that reading the comment as part of the path was
+    only ever going to produce a confusing "does not exist" later.
+    """
+    value = raw.strip()
+    for quote in ('"', "'"):
+        if len(value) >= 2 and value.startswith(quote) and value.endswith(quote):
+            return value[1:-1]
+    return value.split(" #", 1)[0].split("\t#", 1)[0].strip()
+
+
 def _load_dotenv(path):
     """Minimal .env reader (no dependency on python-dotenv).
 
-    Uses setdefault: an existing environment variable is never overwritten.
+    An existing environment variable is never overwritten — but an existing
+    *empty* one is, because it carries no setting and would otherwise silently
+    suppress the line in .env while looking like a value was provided.
     """
     if not path.exists():
         return
@@ -28,7 +45,10 @@ def _load_dotenv(path):
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, _, value = line.partition("=")
-        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+        key = key.strip()
+        if os.environ.get(key, "").strip():
+            continue
+        os.environ[key] = _dotenv_value(value)
 
 
 _load_dotenv(REPO_ROOT / ".env")
@@ -74,6 +94,12 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".heic", ".webp", ".orf"}
 # many machines, and inheriting it silently sends this tool's index and backups
 # into some other tool's folder (caught exactly that way during a smoke test).
 OUTPUT_DIR = _path("XMP_AUTOTAG_OUTPUT_DIR", REPO_ROOT / "output")
+
+# Artefacts several modules have to agree on. Spelled out once here rather than
+# recomputed per module: the writer and the reader of a file that live in
+# different scripts drift apart the moment one of them is edited alone.
+INDEX_PATH = OUTPUT_DIR / "search_index.jsonl"
+DUPLICATES_PATH = OUTPUT_DIR / "near_duplicates.json"
 
 # --- Vision model (OpenRouter) -------------------------------------------
 API_KEY = _str("OPENROUTER_API_KEY")
