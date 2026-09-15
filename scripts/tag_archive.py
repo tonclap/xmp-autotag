@@ -210,10 +210,17 @@ class Run:
 
 
 def run_pool(items, worker, run, workers, report_every=50):
-    """Run `worker` over `items` in a thread pool, printing progress."""
+    """Run `worker` over `items` in a thread pool, printing progress.
+
+    Ctrl+C stops the run: the queued work is cancelled explicitly. Leaving the
+    pool to its default shutdown does the opposite — the worker threads drain
+    the whole queue first, so an interrupted run of ten thousand images kept
+    calling the paid API for hours after the interrupt.
+    """
     t0 = time.time()
     done = 0
-    with ThreadPoolExecutor(max_workers=workers) as pool:
+    pool = ThreadPoolExecutor(max_workers=workers)
+    try:
         futures = {pool.submit(worker, item): item for item in items}
         for future in as_completed(futures):
             done += 1
@@ -231,7 +238,26 @@ def run_pool(items, worker, run, workers, report_every=50):
                     f"error={run.stats['error']} cost=${run.stats['cost']:.4f}",
                     flush=True,
                 )
+    except KeyboardInterrupt:
+        pool.shutdown(wait=False, cancel_futures=True)
+        print(f"\ninterrupted after {done} files - nothing queued will be sent",
+              flush=True)
+        raise
+    finally:
+        pool.shutdown(wait=True)
     return time.time() - t0
+
+
+def cli(entry_point):
+    """Run a command line entry point, turning Ctrl+C into a quiet exit code.
+
+    Shared by every script that tags: an interrupt is a normal way to stop a run
+    here, so it should read as "stopped", not as a traceback.
+    """
+    try:
+        entry_point()
+    except KeyboardInterrupt:
+        raise SystemExit(130)
 
 
 def main():
@@ -267,4 +293,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    cli(main)

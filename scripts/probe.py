@@ -85,4 +85,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    tag_archive.cli(main)
