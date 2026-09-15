@@ -4,6 +4,10 @@ No real archive and no API call: discover() walks a synthetic tree in tmp_path
 and already_done() reads synthetic sidecars. These two functions decide what a
 run costs money for, so they are worth pinning.
 """
+import time
+
+import pytest
+
 import tag_archive
 import xmp
 
@@ -114,3 +118,51 @@ def test_xmp_backup_dir_is_redirectable(tmp_path):
         assert backup_path.parent == tmp_path / "backups"
     finally:
         xmp.BACKUP_DIR = original
+
+
+# --- run_pool: Ctrl+C must stop the run, not just the reporting ---------
+
+class _CountingRun:
+    """Minimal stand-in for Run: counts worker calls, interrupts on first log."""
+
+    def __init__(self):
+        self.calls = []
+        self.stats = dict.fromkeys(
+            ("created", "merged", "skipped_done", "skipped_has_subject", "error"), 0
+        )
+        self.stats["cost"] = 0.0
+
+    def log(self, entry):
+        # The main loop calls this for a worker that raised; interrupting here
+        # is the same place a real Ctrl+C lands — in the consumer, not in a
+        # worker thread.
+        raise KeyboardInterrupt
+
+    def bump(self, key, cost=0.0):
+        self.stats[key] = self.stats.get(key, 0) + 1
+
+
+def test_run_pool_cancels_queued_work_on_interrupt():
+    # The default ThreadPoolExecutor shutdown drains the queue before it stops,
+    # so an interrupted run kept calling the paid API for everything already
+    # submitted - hours of spending after Ctrl+C on a five-figure archive.
+    run = _CountingRun()
+
+    def worker(item):
+        run.calls.append(item)
+        time.sleep(0.01)
+        raise RuntimeError("boom")
+
+    with pytest.raises(KeyboardInterrupt):
+        tag_archive.run_pool(range(200), worker, run, workers=2, report_every=1000)
+
+    assert len(run.calls) < 50  # not all 200
+
+
+def test_cli_turns_an_interrupt_into_an_exit_code():
+    def entry_point():
+        raise KeyboardInterrupt
+
+    with pytest.raises(SystemExit) as excinfo:
+        tag_archive.cli(entry_point)
+    assert excinfo.value.code == 130
